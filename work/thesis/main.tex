@@ -5,11 +5,6 @@
 \author{1M170055-1　古瀬慶大 }
 \date{\today}
 
-\usepackage{natbib}
-\usepackage[dvipdfmx]{graphicx}
-\usepackage{here}
-
-
 % Default fixed font does not support bold face
 \DeclareFixedFont{\ttb}{T1}{txtt}{bx}{n}{12} % for bold
 \DeclareFixedFont{\ttm}{T1}{txtt}{m}{n}{12}  % for normal
@@ -52,6 +47,9 @@ showstringspaces=false            %
 % Python for inline
 \newcommand\pythoninline[1]{{\pythonstyle\lstinline!#1!}}
 
+\usepackage{natbib}
+\usepackage[dvipdfmx]{graphicx}
+\usepackage{here}
 
 
 \begin{document}
@@ -257,7 +255,7 @@ W_t := W_{t-1} + v_t
 \end{center}
 
 
-勾配法のもう一つの問題点として、、学習率\begin{math}\eta\end{math}が小さすぎると学習が進まず、大きすぎると学習がうまく進まない事が挙げられる。そこで、学習の過程で学習率\begin{math}\eta\end{math}を徐々に小さくすればよい。これを擬似的に再現したものが、以下のように表される。
+勾配法のもう一つの問題点として、、学習率\begin{math}\eta\end{math}が小さすぎると学習が進まず、大きすぎると学習がうまく進まない事が挙げられる。そこで、学習の過程で学習率\begin{math}\eta\end{math}を徐々に小さくすればよい。これを擬似的に再現した手法はAdaGradと呼ばれ、、以下のように表される。
 
 
 \begin{center}
@@ -289,6 +287,13 @@ from sklearn.model_selection import train_test_split
 import pandas
 from tensorflow.keras.models import Sequential
 import tensorflow as tf
+from tensorflow.keras.layers import Dense, Activation
+from tensorflow.keras import optimizers
+from keras.callbacks import EarlyStopping
+from keras.layers.normalization import BatchNormalization
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+import tensorflow as tf
 from tensorflow.keras.layers import Dense
 from tensorflow.keras import optimizers
 from keras.callbacks import EarlyStopping
@@ -303,13 +308,199 @@ from keras.layers.normalization import BatchNormalization
 csv = './openpowerlifting-2020-09-06.csv'
 df = pandas.read_csv(csv,index_col=0,low_memory=False)
 df['Sex'] = df['Sex'].map({'M': 1, 'F': 0, 'Mx': -1})
-df['Equipment'] = df['Equipment'].map({'Single-ply':0, 'Raw':1, 'Wraps':2, 'Unlimited':3, 'Multi-ply':4})
-data = df[['Sex','BodyweightKg', 'Best3SquatKg', 'Best3DeadliftKg','Age','Equipment', 'Best3BenchKg']].dropna(how='any')
+df['Equipment'] = df['Equipment'].map({'Single-ply':0, 
+'Raw':1, 'Wraps':2, 'Unlimited':3, 'Multi-ply':4})
+data = df[['Sex','BodyweightKg', 'Best3SquatKg', 
+'Best3DeadliftKg','Age','Equipment', 'Best3BenchKg']].
+dropna(how='any')
+\end{python}
+
+データを0.0から1.0の間に正規化する。
+\\
+
+\begin{python}
+sc = MinMaxScaler()
+data_std = sc.fit_transform(data)
+\end{python}
+
+データを訓練データとテストデータに分け、訓練データからさらに検証データを作成する。
+\\
+
+
+\begin{python}
+X_train, X_test, Y_train, Y_test = 
+train_test_split(data_std[:,:-1], data_std[:,-1], test_size=0.2)
+X_train, X_validation, Y_train, Y_validation = 
+train_test_split(X_train, Y_train, test_size=0.2)
+\end{python}
+
+今回の実験ではモデルの構築にKerasというライブラリを使用するが、Kerasには決定係数\begin{math}R^2\end{math}が用意されていないので、自前で定義する。
+\\
+
+\begin{python}
+def r_square(y_true, y_pred):
+    from keras import backend as K
+    SS_res =  K.sum(K.square(y_true - y_pred)) 
+    SS_tot = K.sum(K.square(y_true - K.mean(y_true))) 
+    return (1 - SS_res/(SS_tot + K.epsilon()))
+\end{python}
+
+ここまでで下準備が整ったので、実際にモデルを構築する。まずは隠れ層を用いない単純パーセプトロンを使用する。特徴量の数は、今回使用するデータセットからベンチプレスのカラムを除いた6つとなっており、出力層には恒等関数、損失関数には二乗和誤差を使用する。この3つは今後の実験においても変わらない。エポック数は20とし、最適化アルゴリズムには確率的勾配降下法を用いる。
+\\
+
+\begin{python}
+n_features = 6
+n_hidden   = 4
+model = Sequential()
+model.add(InputLayer(input_shape=(n_features,)))
+model.add(Dense(1))
+model.add(Activation('linear'))
+optimizer = optimizers.SGD(learning_rate=0.1)
+model.compile(optimizer=optimizer,
+              loss='mse', metrics=['mae', r_square])
+log = model.fit(X_train, Y_train, epochs=20, batch_size=64, 
+verbose=1,
+         validation_data=(X_validation, Y_validation))
+Y_pred = model.predict(X_test)
+\end{python}
+
+最終的な出力は平均絶対誤差の値が0.0176、決定係数の値が0.8283となっており、この段階でも既に精度の高いモデルが構築できている事が分かる。平均絶対誤差の値が0.016代になる事を目標にモデルに改良を加えていくこととする。それでは最初に、隠れ層を1つ追加し、同様の実験を行ってみる。なお、隠れ層で用いる活性化関数はSigmoid関数で、ニューロンの数は4つとする。
+\\
+
+\begin{python}
+n_features = 6
+n_hidden   = 4
+model = Sequential()
+model.add(InputLayer(input_shape=(n_features,)))
+model.add(Dense(n_hidden, activation='sigmoid'))
+model.add(Activation('linear'))
+optimizer = optimizers.SGD(learning_rate=0.1)
+model.compile(optimizer=optimizer,
+              loss='mse', metrics=['mae', r_square])
+log = model.fit(X_train, Y_train, epochs=30, batch_size=64, 
+verbose=1,
+         validation_data=(X_validation, Y_validation))
+\end{python}
+
+この時、最終的な出力は平均絶対誤差の値が0.0176、決定係数の値が0.8266 となっており、先ほどから全く精度が向上せず、むしろ下がっている事が伺える。ここで、精度がどのように向上しているか可視化してみる。
+\\
+
+\begin{python}
+plt.plot(log.history['val_r_square'])
+plt.plot(log.history['r_square'])
+plt.title('model R^2')
+plt.ylabel('R^2')
+plt.xlabel('epoch')
+plt.legend(['train', 'test'], loc='upper left')
+plt.show()
+
+# plot training curve for rmse
+plt.plot(log.history['mae'])
+plt.plot(log.history['val_mae'])
+plt.title('mae')
+plt.ylabel('mae')
+plt.xlabel('epoch')
+plt.legend(['train', 'test'], loc='upper left')
+plt.show()
 \end{python}
 
 
-\section{Conclusion}
-``I always thought something was fundamentally wrong with the universe'' \citep{adams1995hitchhiker}
+\begin{figure}[H]
+\begin{center}
+\includegraphics[width=\linewidth]{experiment1.png}
+\caption{実験結果1}
+\end{center}
+\end{figure}
+
+上記のグラフから、決定係数の学習が初期の段階で頭打ちになっている事が伺える。勾配が途中で消失している可能性があるので、活性化関数にSigmoid関数の代わりに双曲線正接関数を使用し、同様の実験を行ってみる。
+\\
+
+\begin{python}
+n_features = 6
+n_hidden   = 4
+model = Sequential()
+model.add(InputLayer(input_shape=(n_features,)))
+model.add(Dense(n_hidden, activation='tanh'))
+model.add(Dense(1))
+model.add(Activation('linear'))
+optimizer = optimizers.SGD(learning_rate=0.1)
+model.compile(optimizer=optimizer,
+              loss='mse', metrics=['mae', r_square])
+log = model.fit(X_train, Y_train, epochs=20, batch_size=64, 
+verbose=1,
+         validation_data=(X_validation, Y_validation))
+\end{python}
+
+この時、最終的な出力は平均絶対誤差の値が0.0174 、決定係数の値が0.8337となっている。平均絶対誤差の値が0.0002下がり、決定係数が0.83を超えたので、精度が向上している事が分かる。活性化関数の重要性が確認できたところで、次に隠れ層の数を2つ増やしてみる。それに伴い、エポック数のの数を30に増やすこととする。
+\\
+
+
+\begin{python}
+plt.plot(log.history['val_r_square'])
+n_features = 6
+n_hidden   = 4
+model = Sequential()
+model.add(InputLayer(input_shape=(n_features,)))
+model.add(Dense(n_hidden, activation='tanh'))
+model.add(Dense(n_hidden, activation='tanh'))
+model.add(Dense(n_hidden, activation='tanh'))
+model.add(Dense(1))
+model.add(Activation('linear'))
+optimizer = optimizers.SGD(learning_rate=0.1)
+model.compile(optimizer=optimizer,
+              loss='mse', metrics=['mae', r_square])
+log = model.fit(X_train, Y_train, epochs=20, batch_size=64, 
+verbose=1,
+         validation_data=(X_validation, Y_validation))
+Y_pred = model.predict(X_test)
+Y_pred = model.predict(X_test)
+\end{python}
+
+
+この時、最終的な出力は平均絶対誤差の値が0.0174 、決定係数の値が0.8373となっており、先ほどから決定係数が0.0036ほど向上している事が伺える。ここで、隠れ層を1つ増やし、最適化アルゴリズムに確率的勾配降下法ではなくAdamを使用し実験を試みてみる。
+\\
+
+
+\begin{python}
+n_features = 6
+n_hidden   = 4
+model = Sequential()
+model.add(InputLayer(input_shape=(n_features,)))
+model.add(Dense(n_hidden, activation='tanh'))
+model.add(Dense(n_hidden, activation='tanh'))
+model.add(Dense(n_hidden, activation='tanh'))
+model.add(Dense(n_hidden, activation='tanh'))
+model.add(Dense(1))
+model.add(Activation('linear'))
+optimizer = optimizers.Adam(learning_rate=0.001)
+model.compile(optimizer=optimizer,
+              loss='mse', metrics=['mae', r_square])
+log = model.fit(X_train, Y_train, epochs=30, batch_size=64, 
+verbose=1,
+         validation_data=(X_validation, Y_validation))
+\end{python}
+
+この時、最終的な出力は平均絶対誤差の値が0.0169 、決定係数の値が0.8444 となっており、平均絶対誤差が目標値に達した事が伺える。それでは最後に学習のグラフを可視化してみる。
+\\
+
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[width=\linewidth]{experiment2.png}
+\caption{実験結果1}
+\end{center}
+\end{figure}
+
+
+上記の実験結果より、隠れ層や最適化アルゴリズムを改良することにより機械学習モデルの精度を向上させる事ができる事が確認できた。
+
+
+\section{結論}
+
+
+
+
+ \citep{adams1995hitchhiker}
 
 \bibliographystyle{plain}
 \bibliography{references}
